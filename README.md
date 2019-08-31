@@ -8,7 +8,7 @@ PDF をすべて画像化し、再度 PDF にまとめ直します。
 
 CSS 組版のような Web ブラウザからの PDF 出力では現状、以下のような問題があります。
 
-- OpenType フォントを利用した場合、PDF 内では Type3 形式となる。印刷所の印刷工程においては CID・Type1・アウトラインのいずれかのみ
+- OpenType フォントを利用した場合、PDF 内では Type3 形式となる (印刷所の印刷工程においては不正)
 - トンボやデジタルトンボがない、または不正確
 
 本ツールは以下の機能を提供します。
@@ -16,10 +16,12 @@ CSS 組版のような Web ブラウザからの PDF 出力では現状、以下
 - PDF を画像化することで、フォントの問題を解消します。
 - 正確なトンボおよびデジタルトンボを付けます。
 
+![](rasterized.png)
+
 ## 準備
 pdftocairo および TeXLive 2018 以上の環境が必要です。
 
-[Re:VIEW image for Docker](https://hub.docker.com/r/vvakame/review/) には必要なものが一式含まれているので、これを使うのが簡単でしょう。
+[Re:VIEW image for Docker](https://hub.docker.com/r/vvakame/review/) には必要なものが一式含まれているので、これを使うのが最も簡単でしょう。
 
 ## 使い方
 ```
