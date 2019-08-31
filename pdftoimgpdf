@@ -1,0 +1,170 @@
+#!/usr/bin/env ruby
+# Copyright (c) 2019 Kenshi Muto
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+# 
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+# 
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+# pdftocairo, TeXLive 2018以上 が必要
+require 'open3'
+require 'fileutils'
+require 'tmpdir'
+require 'optparse'
+
+class MakeImagePDFError < Exception
+end
+
+class MakeImagePDF
+  def initialize
+    # DPI
+    @dpi = 180
+    @paper = 'a5'
+    @landscape = nil
+    @tombo = true
+    @tombopaper = nil
+    @tombobleed = 3.0
+  end
+
+  def usage
+    STDERR.puts <<EOT
+convert-imgpdf [オプション] 入力PDF 出力PDF
+  入力PDFの全ページを画像化して、出力PDFに保存します。
+
+オプション
+  -d DPI値: 解像度を指定します(デフォルト:180)。
+     印刷向けには600程度にする必要があるかもしれません。
+  -p 紙サイズ: 実際の製本時サイズを指定します(デフォルト:a5)。
+     通常使われるものは a4, a5, b5 のいずれかでしょう。
+  -l: 紙を横長で使用します(このオプションを付けないときのデフォルトは縦長)。
+  --tombopaper 紙サイズ: トンボ付きの紙サイズを指定します
+     (デフォルト:製本時サイズの一回り大きな紙サイズ)。
+  --tombobleed 幅: トンボおよびデジタルトンボの塗り足し幅をmm単位で指定
+     します(デフォルト:3)。
+EOT
+    exit 0
+    # 生成結果が変な気がするので表記しない
+    #  --notombo: 通常は印刷向けにトンボおよびデジタルトンボを有効にします。
+    #     このオプションを付けると、トンボ・デジタルトンボを入れず、製本サイズ
+    #     でのPDFを生成します。
+  end
+
+  def main
+    opts = OptionParser.new
+    opts.on('-h', '--help') { usage }
+    opts.on('-d dpi') {|dpi| @dpi = dpi.to_i }
+    opts.on('-p paper') {|p| @paper = p }
+    opts.on('-l') { @landscape = true }
+    opts.on('--notombo') { @tombo = nil }
+    opts.on('--tombopaper paper') {|p| @tombopaper = p }
+    opts.on('--tombobleed margin') {|m| @tombobleed = m.to_f }
+    begin
+      opts.parse!(ARGV)
+    rescue OptionParser::ParseError => e
+      STDERR.puts e.message
+      usage
+    end
+
+    usage if ARGV.size < 2 || !File.exist?(ARGV[0]) || ARGV[0] == ARGV[1]
+    @input = ARGV[0]
+    @output = ARGV[1]
+    begin
+      convert
+    rescue MakeImagePDFError
+      exit 1
+    end
+  end
+
+  def convert
+    Dir.mktmpdir('imgpdf') do |d|
+      out, status = Open3.capture2e('pdftocairo', '-q', '-r', @dpi.to_s, '-png', @input, File.join(d, 'i'))
+
+      unless status.success?
+        STDERR.puts "execution error: #{out}"
+        raise MakeImagePDFError
+      end
+
+      File.open(File.join(d, 'bmp.tex'), 'w') do |f|
+        s = '\documentclass[paper=' + @paper
+        s << ',landscape' if @landscape
+        s << ']{jlreq}'
+        f.puts s
+
+        if @tombo
+          s = '\usepackage['
+          s << "bleed_margin=#{@tombobleed}mm"
+          s << ",trimmarks_paper=#{@tombopaper}" if @tombopaper
+          s << ']{jlreq-trimmarks}'
+          f.puts s
+          f.puts '\jlreqtrimmarkssetup{banner={}}'
+        end
+
+        f.puts <<'EOT'
+\usepackage[nosetpagesize,dvipdfmx]{graphicx}
+\makeatletter
+\edef\grnchry@head{\dimexpr\topmargin+1in+\headheight+\headsep}
+\edef\grnchry@gutter{\evensidemargin}
+\newcommand*\includefullpagegraphics{%
+  \clearpage
+  \@ifstar
+    {\@includefullpagegraphics}%
+    {\thispagestyle{empty}\@includefullpagegraphics}
+}
+
+\newcommand*\@includefullpagegraphics[2][]{%
+    \vbox to \textheight{%
+      \vskip-\grnchry@head
+      \vbox to \paperheight{\vss
+        \hbox to \textwidth{%
+          \ifodd\c@page
+            \hskip-\dimexpr\oddsidemargin + 1in\relax
+          \else
+            \hskip-\dimexpr\evensidemargin + 1in\relax
+          \fi
+          \hbox to \paperwidth{\hss
+            \includegraphics[#1]{#2}%
+          \hss}%
+        \hss}%
+      \vss}%
+    \vss}%
+  \clearpage
+}
+\makeatother
+\begin{document}
+EOT
+        Dir.glob(File.join(d, 'i-*.png')).sort.each do |name|
+          f.puts "\\includefullpagegraphics{#{File.basename(name)}}"
+        end
+
+        f.puts <<'EOT'
+\end{document}
+EOT
+      end
+
+      Dir.chdir(d) do
+        out, status = Open3.capture2e('ptex2pdf', '-l', '-u', 'bmp')
+        unless status.success?
+          STDERR.puts "execution error: #{out}"
+          raise MakeImagePDFError
+        end
+      end
+
+      FileUtils.cp(File.join(d, 'bmp.pdf'), @output)
+    end
+  end
+end
+
+m = MakeImagePDF.new
+m.main
